@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Auto-Filler - In-Browser Test Suite & Demo</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 800px;
+      margin: 30px auto;
+      padding: 0 20px;
+      background: #0f172a;
+      color: #f8fafc;
+    }
+    h1 {
+      color: #818cf8;
+      font-size: 24px;
+      margin-bottom: 8px;
+    }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 24px;
+    }
+    .form-group {
+      margin-bottom: 16px;
+    }
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 500;
+      color: #cbd5e1;
+    }
+    input[type="text"], input[type="email"], select, textarea {
+      width: 100%;
+      padding: 8px 12px;
+      background: #0f172a;
+      border: 1px solid #475569;
+      border-radius: 6px;
+      color: white;
+      box-sizing: border-box;
+      font-size: 14px;
+    }
+    button {
+      background: #4f46e5;
+      color: white;
+      border: none;
+      padding: 10px 18px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-right: 10px;
+    }
+    button:hover {
+      background: #4338ca;
+    }
+    button.secondary {
+      background: #334155;
+    }
+    button.secondary:hover {
+      background: #475569;
+    }
+    .test-log {
+      background: #020617;
+      border: 1px solid #1e293b;
+      border-radius: 6px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 13px;
+      max-height: 280px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    .pass { color: #34d399; }
+    .fail { color: #f87171; }
+    .info { color: #38bdf8; }
+    .event-badge {
+      display: inline-block;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: #334155;
+      margin-left: 8px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🧪 AI Auto-Filler Test Suite & Interactive Form</h1>
+  <p style="color: #94a3b8; margin-bottom: 20px;">
+    Unit tests and live DOM form injection verification for the Chrome extension.
+  </p>
+
+  <div class="card">
+    <h2 style="font-size: 16px; margin-bottom: 12px;">Automated Test Suite Execution</h2>
+    <div style="margin-bottom: 12px;">
+      <button id="runAllTestsBtn">▶ Run All Unit Tests</button>
+      <button id="testInjectDemoBtn" class="secondary">⚡ Test Live DOM Injection</button>
+    </div>
+    <div id="testLog" class="test-log">Click "Run All Unit Tests" to verify AI modules and DOM interaction.</div>
+  </div>
+
+  <div class="card">
+    <h2 style="font-size: 16px; margin-bottom: 12px;">Live Interactive Form Under Test</h2>
+    <form id="dummyForm" onsubmit="event.preventDefault();">
+      <div class="form-group">
+        <label for="fullName">Full Name</label>
+        <input type="text" id="fullName" name="full_name" placeholder="e.g. John Doe">
+        <span id="nameEventBadge" class="event-badge">Waiting...</span>
+      </div>
+
+      <div class="form-group">
+        <label for="workEmail">Work Email Address</label>
+        <input type="email" id="workEmail" name="work_email" placeholder="e.g. john@company.com">
+        <span id="emailEventBadge" class="event-badge">Waiting...</span>
+      </div>
+
+      <div class="form-group">
+        <label for="country">Country</label>
+        <select id="country" name="country">
+          <option value="">Select country...</option>
+          <option value="us">United States</option>
+          <option value="ca">Canada</option>
+          <option value="uk">United Kingdom</option>
+          <option value="de">Germany</option>
+        </select>
+        <span id="countryEventBadge" class="event-badge">Waiting...</span>
+      </div>
+
+      <div class="form-group">
+        <label for="feedback">Professional Background / Bio</label>
+        <textarea id="feedback" name="feedback" rows="3" placeholder="Tell us about yourself..."></textarea>
+        <span id="bioEventBadge" class="event-badge">Waiting...</span>
+      </div>
+    </form>
+  </div>
+
+  <script type="module">
+    import { buildPrompt } from '../ai_module/prompt_builder.js';
+    import { extractJsonFromText, parseFormAnswers } from '../ai_module/response_parser.js';
+    import { queryOpenRouter } from '../ai_module/openrouter_client.js';
+    import { extractFormFields, injectAnswers } from '../extension_core/content_script.js';
+
+    const logEl = document.getElementById('testLog');
+    const runBtn = document.getElementById('runAllTestsBtn');
+    const injectBtn = document.getElementById('testInjectDemoBtn');
+
+    function log(msg, type = 'info') {
+      const line = document.createElement('div');
+      line.className = type;
+      line.textContent = msg;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    // Attach reactive listeners to show live feedback
+    const fields = [
+      { id: 'fullName', badge: 'nameEventBadge' },
+      { id: 'workEmail', badge: 'emailEventBadge' },
+      { id: 'country', badge: 'countryEventBadge' },
+      { id: 'feedback', badge: 'bioEventBadge' }
+    ];
+
+    fields.forEach(f => {
+      const el = document.getElementById(f.id);
+      const badge = document.getElementById(f.badge);
+      el.addEventListener('input', () => {
+        badge.textContent = `input: "${el.value.slice(0, 15)}..."`;
+        badge.style.background = '#065f46';
+      });
+      el.addEventListener('change', () => {
+        badge.textContent = `change: "${el.value.slice(0, 15)}..."`;
+        badge.style.background = '#1e3a8a';
+      });
+    });
+
+    runBtn.addEventListener('click', async () => {
+      logEl.innerHTML = '';
+      log('Running unit test suite...', 'info');
+      let passed = 0;
+      let total = 0;
+
+      function test(cond, desc) {
+        total++;
+        if (cond) {
+          passed++;
+          log(`✓ PASS: ${desc}`, 'pass');
+        } else {
+          log(`✗ FAIL: ${desc}`, 'fail');
+        }
+      }
+
+      try {
+        // Test Prompt Builder
+        const sample = [{ id: 'test_id', type: 'text', label: 'Test Question' }];
+        const prompt = buildPrompt(sample, 'Dev User');
+        test(prompt.length === 2, 'buildPrompt creates system and user prompts');
+        test(prompt[0].content.includes('Dev User'), 'Prompt incorporates user persona');
+
+        // Test Response Parser
+        const parsed = parseFormAnswers('```json\n{"answers": {"test_id": "Tested!"}}\n```');
+        test(parsed.answers.test_id === 'Tested!', 'parseFormAnswers extracts markdown fenced JSON');
+
+        // Test OpenRouter Client Mock
+        const mockFetch = async () => ({
+          ok: true,
+          json: async () => ({
+            choices: [{ message: { content: '{"answers": {"test_id": "Mocked"}}' } }]
+          })
+        });
+        const aiRes = await queryOpenRouter({
+          apiKey: 'mock-key',
+          messages: prompt,
+          fetchFn: mockFetch
+        });
+        test(aiRes.content.includes('Mocked'), 'queryOpenRouter returns assistant content on 200 OK');
+
+        // Test DOM Extraction
+        const formEl = document.getElementById('dummyForm');
+        const extracted = extractFormFields(formEl);
+        test(extracted.length === 4, `extractFormFields found all 4 fields (got ${extracted.length})`);
+        test(extracted[0].label === 'Full Name', 'extractFormFields correctly mapped "Full Name" label');
+        test(extracted[2].type === 'select', 'extractFormFields correctly mapped select dropdown');
+
+        log(`\nTest Suite Complete: ${passed}/${total} passed!`, passed === total ? 'pass' : 'fail');
+      } catch (err) {
+        log(`Test error: ${err.message}`, 'fail');
+      }
+    });
+
+    injectBtn.addEventListener('click', () => {
+      const formEl = document.getElementById('dummyForm');
+      const mockAnswers = {
+        fullName: 'Ada Lovelace',
+        workEmail: 'ada@computing.org',
+        country: 'uk',
+        feedback: 'Pioneer of computer algorithms and computational science.'
+      };
+
+      const filled = injectAnswers(mockAnswers, formEl);
+      log(`Injected ${filled} fields via synthetic events.`, 'pass');
+    });
+  </script>
+</body>
+</html>

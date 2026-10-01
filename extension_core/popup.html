@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Auto-Filler</title>
+  <style>
+    :root {
+      --primary: #4f46e5;
+      --primary-hover: #4338ca;
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --success: #10b981;
+      --error: #ef4444;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    body {
+      width: 340px;
+      background-color: var(--bg);
+      color: var(--text);
+      padding: 16px;
+      font-size: 13px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .brand img {
+      width: 24px;
+      height: 24px;
+    }
+
+    .brand h1 {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.2px;
+    }
+
+    /* Switch toggle */
+    .switch-container {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 36px;
+      height: 20px;
+    }
+
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #475569;
+      transition: .2s;
+      border-radius: 20px;
+    }
+
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 14px;
+      width: 14px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .2s;
+      border-radius: 50%;
+    }
+
+    input:checked + .slider {
+      background-color: var(--primary);
+    }
+
+    input:checked + .slider:before {
+      transform: translateX(16px);
+    }
+
+    .form-group {
+      margin-bottom: 12px;
+    }
+
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-bottom: 5px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .input-wrapper {
+      position: relative;
+      display: flex;
+    }
+
+    input[type="text"],
+    input[type="password"],
+    select,
+    textarea {
+      width: 100%;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      color: var(--text);
+      font-size: 12px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    input[type="text"]:focus,
+    input[type="password"]:focus,
+    select:focus,
+    textarea:focus {
+      border-color: var(--primary);
+    }
+
+    .toggle-visibility-btn {
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 11px;
+      padding: 2px 4px;
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 48px;
+    }
+
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      width: 100%;
+      padding: 9px;
+      border-radius: 6px;
+      font-weight: 500;
+      font-size: 12px;
+      cursor: pointer;
+      border: none;
+      transition: background 0.15s;
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: var(--primary-hover);
+    }
+
+    .btn-secondary {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    .btn-secondary:hover {
+      background: #334155;
+    }
+
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    #statusMessage {
+      margin-top: 10px;
+      padding: 7px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      display: none;
+      text-align: center;
+    }
+
+    #statusMessage.success {
+      display: block;
+      background-color: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    #statusMessage.error {
+      display: block;
+      background-color: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    #statusMessage.info {
+      display: block;
+      background-color: rgba(79, 70, 229, 0.15);
+      color: #818cf8;
+      border: 1px solid rgba(79, 70, 229, 0.3);
+    }
+
+    footer {
+      margin-top: 12px;
+      text-align: center;
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+
+    footer a {
+      color: #818cf8;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <img src="assets/icon48.png" alt="Logo">
+      <h1>AI Auto-Filler</h1>
+    </div>
+    <div class="switch-container">
+      <label class="switch" title="Toggle Auto-Filler Enabled/Disabled">
+        <input type="checkbox" id="enabledToggle" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+  </header>
+
+  <main>
+    <div class="form-group">
+      <label for="apiKey">OpenRouter API Key</label>
+      <div class="input-wrapper">
+        <input type="password" id="apiKey" placeholder="sk-or-v1-..." autocomplete="off">
+        <button type="button" class="toggle-visibility-btn" id="toggleApiKeyBtn">Show</button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="modelSelect">AI Model</label>
+      <select id="modelSelect">
+        <option value="openrouter/free">openrouter/free (Default Free Tier)</option>
+        <option value="meta-llama/llama-3.3-70b-instruct:free">meta-llama/llama-3.3-70b-instruct:free</option>
+        <option value="google/gemini-2.0-flash-exp:free">google/gemini-2.0-flash-exp:free</option>
+        <option value="mistralai/mistral-7b-instruct:free">mistralai/mistral-7b-instruct:free</option>
+        <option value="custom">Custom Model ID...</option>
+      </select>
+    </div>
+
+    <div class="form-group" id="customModelGroup" style="display: none;">
+      <label for="customModel">Custom Model ID</label>
+      <input type="text" id="customModel" placeholder="e.g. anthropic/claude-3-haiku">
+    </div>
+
+    <div class="form-group">
+      <label for="userContext">User Context / Profile (Optional)</label>
+      <textarea id="userContext" placeholder="e.g. Name: Jane Doe, Role: Engineer, City: San Francisco..."></textarea>
+    </div>
+
+    <div class="actions">
+      <button type="button" class="btn btn-primary" id="fillCurrentPageBtn">
+        ✨ Auto-Fill Current Form
+      </button>
+      <button type="button" class="btn btn-secondary" id="saveSettingsBtn">
+        Save Settings
+      </button>
+    </div>
+
+    <div id="statusMessage"></div>
+  </main>
+
+  <footer>
+    Powered by <a href="https://openrouter.ai" target="_blank">OpenRouter</a>
+  </footer>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
