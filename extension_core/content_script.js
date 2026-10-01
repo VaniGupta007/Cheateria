@@ -1,10 +1,8 @@
 /**
  * Content Script - DOM Interaction & Form Extraction / Injection
- * Manifest V3 classic content script for scanning forms, extracting field questions,
- * and injecting AI-generated answers with synthetic reactive events.
+ * Manifest V3 content script for scanning forms, extracting field questions,
+ * and injecting AI-generated answers.
  */
-
-console.log('[AI Auto-Filler Content] Script loaded on:', window.location.href);
 
 // Supported input types to include
 const SUPPORTED_INPUT_TYPES = new Set([
@@ -24,7 +22,7 @@ const IGNORED_INPUT_TYPES = new Set([
  * @param {HTMLElement} element - The form control element.
  * @returns {string} The resolved label / question text.
  */
-function findLabelForElement(element) {
+export function findLabelForElement(element) {
   if (!element) return '';
 
   // 1. Direct label via `for` attribute
@@ -38,6 +36,7 @@ function findLabelForElement(element) {
   // 2. Enclosing parent <label>
   const parentLabel = element.closest('label');
   if (parentLabel && parentLabel.textContent.trim()) {
+    // Clone and remove the input itself so its value isn't part of the label
     const clone = parentLabel.cloneNode(true);
     const nestedInput = clone.querySelector('input, textarea, select');
     if (nestedInput) nestedInput.remove();
@@ -90,8 +89,7 @@ function findLabelForElement(element) {
  * @param {Document|HTMLElement} container - DOM node to scan (default: document)
  * @returns {Array<Object>} List of field descriptors
  */
-function extractFormFields(container = document) {
-  console.log('[AI Auto-Filler Content] Scanning DOM container for fillable fields...');
+export function extractFormFields(container = document) {
   const elements = container.querySelectorAll('input, textarea, select');
   const fields = [];
   let fieldCounter = 0;
@@ -111,6 +109,7 @@ function extractFormFields(container = document) {
     fieldCounter++;
     const elementId = el.id || '';
     const elementName = el.getAttribute('name') || '';
+    // Assign a unique temporary attribute to reliably match fields during injection
     const trackingId = el.getAttribute('data-autofill-id') || `af_${fieldCounter}_${Date.now()}`;
     el.setAttribute('data-autofill-id', trackingId);
 
@@ -128,6 +127,7 @@ function extractFormFields(container = document) {
       value: el.value || ''
     };
 
+    // Extract options for <select>
     if (tagName === 'select') {
       fieldData.options = Array.from(el.options).map(opt => ({
         value: opt.value,
@@ -135,17 +135,9 @@ function extractFormFields(container = document) {
       })).filter(opt => opt.text || opt.value);
     }
 
-    console.log(`[AI Auto-Filler Content] Detected field #${fieldCounter}:`, {
-      id: fieldData.id,
-      name: fieldData.name,
-      type: fieldData.type,
-      label: fieldData.label
-    });
-
     fields.push(fieldData);
   });
 
-  console.log(`[AI Auto-Filler Content] Total fields extracted: ${fields.length}`);
   return fields;
 }
 
@@ -154,14 +146,10 @@ function extractFormFields(container = document) {
  *
  * @param {HTMLElement} element - Target form control.
  */
-function dispatchInputEvents(element) {
-  try {
-    element.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-    element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-    element.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
-  } catch (err) {
-    console.warn('[AI Auto-Filler Content] Failed to dispatch synthetic event:', err);
-  }
+export function dispatchInputEvents(element) {
+  element.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+  element.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+  element.dispatchEvent(new Event('blur', { bubbles: true, cancelable: true }));
 }
 
 /**
@@ -171,11 +159,8 @@ function dispatchInputEvents(element) {
  * @param {Document|HTMLElement} container - Container to inject into.
  * @returns {number} Number of successfully injected fields.
  */
-function injectAnswers(answers, container = document) {
-  console.log('[AI Auto-Filler Content] Starting DOM injection with answers:', answers);
-
+export function injectAnswers(answers, container = document) {
   if (!answers || typeof answers !== 'object') {
-    console.error('[AI Auto-Filler Content] Invalid answers object received:', answers);
     return 0;
   }
 
@@ -196,6 +181,7 @@ function injectAnswers(answers, container = document) {
     } else if (name && answers[name] !== undefined) {
       answer = answers[name];
     } else {
+      // Check case-insensitive match on id or name
       const foundKey = Object.keys(answers).find(k =>
         (id && k.toLowerCase() === id.toLowerCase()) ||
         (name && k.toLowerCase() === name.toLowerCase())
@@ -211,17 +197,14 @@ function injectAnswers(answers, container = document) {
 
     const tagName = el.tagName.toLowerCase();
     const inputType = (el.getAttribute('type') || 'text').toLowerCase();
-    const identifier = id || name || trackingId;
-
-    console.log(`[AI Auto-Filler Content] Injecting answer into [${identifier}] (${tagName}/${inputType}):`, answer);
 
     // 1. Textarea & standard text-like inputs
     if (tagName === 'textarea' || (tagName === 'input' && !['checkbox', 'radio'].includes(inputType))) {
       const valStr = String(answer);
 
-      // Prototype setter bypass for React/Vue reactive state tracking
-      const proto = tagName === 'textarea' ? window.HTMLTextAreaElement?.prototype : window.HTMLInputElement?.prototype;
-      const nativeSetter = proto ? Object.getOwnPropertyDescriptor(proto, 'value')?.set : null;
+      // Use native prototype setter to bypass React 16+ input trackers
+      const proto = tagName === 'textarea' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+      const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
       if (nativeSetter) {
         nativeSetter.call(el, valStr);
       } else {
@@ -266,7 +249,8 @@ function injectAnswers(answers, container = document) {
         }
       }
 
-      if (matchedIndex !== -1) {
+      // If no exact match, try substring match
+      if (matchedIndex === -1) {
         for (let i = 0; i < el.options.length; i++) {
           const opt = el.options[i];
           if (opt.textContent.trim().toLowerCase().includes(ansStr) || ansStr.includes(opt.textContent.trim().toLowerCase())) {
@@ -285,7 +269,6 @@ function injectAnswers(answers, container = document) {
     }
   });
 
-  console.log(`[AI Auto-Filler Content] Injected answers into ${filledCount} fields.`);
   return filledCount;
 }
 
@@ -295,7 +278,6 @@ function injectAnswers(answers, container = document) {
  * @param {HTMLElement} element
  */
 function highlightField(element) {
-  if (!element || !element.style) return;
   const originalOutline = element.style.outline;
   const originalTransition = element.style.transition;
 
@@ -308,64 +290,41 @@ function highlightField(element) {
   }, 1200);
 }
 
-// Expose API on global scope for environment and testing access
-const autoFillerApi = {
-  findLabelForElement,
-  extractFormFields,
-  injectAnswers,
-  dispatchInputEvents
-};
-
-if (typeof globalThis !== 'undefined') {
-  globalThis.__AIAutoFiller = autoFillerApi;
-}
+// Expose on window object for extension environment & unit testing compatibility
 if (typeof window !== 'undefined') {
-  window.__AIAutoFiller = autoFillerApi;
+  window.__AIAutoFiller = {
+    extractFormFields,
+    findLabelForElement,
+    injectAnswers,
+    dispatchInputEvents
+  };
 }
 
-// Register Chrome runtime message passing listener
+// Message passing listener (for browser extension runtime)
 if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
-  console.log('[AI Auto-Filler Content] Registering chrome.runtime.onMessage listener...');
-
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    console.log('[AI Auto-Filler Content] Received message from:', sender?.id ? 'extension' : sender, request);
-
-    if (request.action === 'PING') {
-      console.log('[AI Auto-Filler Content] Received PING. Responding PONG.');
-      sendResponse({ status: 'PONG', active: true });
-      return true;
-    }
-
     if (request.action === 'FILL_FORM') {
-      console.log('[AI Auto-Filler Content] Initiating form extraction and fill workflow...');
       const fields = extractFormFields();
 
       if (fields.length === 0) {
-        console.warn('[AI Auto-Filler Content] No fillable fields detected on page.');
         sendResponse({ success: false, error: 'No fillable form fields found on this page.' });
         return true;
       }
 
-      console.log(`[AI Auto-Filler Content] Sending ${fields.length} fields to background service worker...`);
-
+      // Send extracted fields to background service worker to query OpenRouter
       chrome.runtime.sendMessage({
         action: 'PROCESS_FORM',
         fields
       }, (response) => {
         if (chrome.runtime.lastError) {
-          console.error('[AI Auto-Filler Content] Error from background service worker:', chrome.runtime.lastError.message);
           sendResponse({ success: false, error: chrome.runtime.lastError.message });
           return;
         }
 
-        console.log('[AI Auto-Filler Content] Background response received:', response);
-
         if (response && response.success && response.answers) {
           const filledCount = injectAnswers(response.answers);
-          console.log(`[AI Auto-Filler Content] Completed fill process. Fields populated: ${filledCount}`);
           sendResponse({ success: true, filledCount });
         } else {
-          console.error('[AI Auto-Filler Content] AI processing failed:', response?.error);
           sendResponse({ success: false, error: response?.error || 'Unknown error during AI processing.' });
         }
       });
@@ -373,6 +332,4 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage)
       return true; // Keep message channel open for async response
     }
   });
-
-  console.log('[AI Auto-Filler Content] Message listener successfully registered.');
 }
