@@ -1,6 +1,7 @@
 # Environment & API keys
 .env
 .env.local
+dist/
 
 # Node modules
 node_modules/

@@ -132,18 +132,20 @@
       </div>
 
       <div class="form-group">
-        <label for="feedback">Professional Background / Bio</label>
-        <textarea id="feedback" name="feedback" rows="3" placeholder="Tell us about yourself..."></textarea>
+        <label for="feedback">Project Summary</label>
+        <textarea id="feedback" name="feedback" rows="3" placeholder="Describe the project..."></textarea>
         <span id="bioEventBadge" class="event-badge">Waiting...</span>
       </div>
     </form>
   </div>
 
+  <script src="../extension_core/content_script.js"></script>
   <script type="module">
     import { buildPrompt } from '../ai_module/prompt_builder.js';
-    import { extractJsonFromText, parseFormAnswers } from '../ai_module/response_parser.js';
+    import { parseFormAnswers } from '../ai_module/response_parser.js';
     import { queryOpenRouter } from '../ai_module/openrouter_client.js';
-    import { extractFormFields, injectAnswers } from '../extension_core/content_script.js';
+
+    const { extractFormFields, injectAnswers } = window.__AIAutoFiller;
 
     const logEl = document.getElementById('testLog');
     const runBtn = document.getElementById('runAllTestsBtn');
@@ -197,9 +199,9 @@
       try {
         // Test Prompt Builder
         const sample = [{ id: 'test_id', type: 'text', label: 'Test Question' }];
-        const prompt = buildPrompt(sample, 'Dev User');
+        const prompt = buildPrompt(sample, { targetKeys: ['test_id'] });
         test(prompt.length === 2, 'buildPrompt creates system and user prompts');
-        test(prompt[0].content.includes('Dev User'), 'Prompt incorporates user persona');
+        test(!prompt[0].content.includes('personal fields'), 'Prompt does not exclude personal-looking fields');
 
         // Test Response Parser
         const parsed = parseFormAnswers('```json\n{"answers": {"test_id": "Tested!"}}\n```');
@@ -214,6 +216,7 @@
         });
         const aiRes = await queryOpenRouter({
           apiKey: 'mock-key',
+          model: 'openrouter/free',
           messages: prompt,
           fetchFn: mockFetch
         });
@@ -223,7 +226,7 @@
         const formEl = document.getElementById('dummyForm');
         const extracted = extractFormFields(formEl);
         test(extracted.length === 4, `extractFormFields found all 4 fields (got ${extracted.length})`);
-        test(extracted[0].label === 'Full Name', 'extractFormFields correctly mapped "Full Name" label');
+        test(!Object.hasOwn(extracted[0], 'isPersonal'), 'extractFormFields does not classify personal fields');
         test(extracted[2].type === 'select', 'extractFormFields correctly mapped select dropdown');
 
         log(`\nTest Suite Complete: ${passed}/${total} passed!`, passed === total ? 'pass' : 'fail');
@@ -238,11 +241,11 @@
         fullName: 'Ada Lovelace',
         workEmail: 'ada@computing.org',
         country: 'uk',
-        feedback: 'Pioneer of computer algorithms and computational science.'
+        feedback: 'A concise description of the project and its expected outcomes.'
       };
 
       const filled = injectAnswers(mockAnswers, formEl);
-      log(`Injected ${filled} fields via synthetic events.`, 'pass');
+      log(`Injected ${filled} empty fields.`, filled === 4 ? 'pass' : 'fail');
     });
   </script>
 </body>

@@ -1,82 +1,186 @@
 /**
- * Response Parser Module
- * Safely extracts and validates JSON form answers from LLM output.
+ * Safe JSON recovery and schema parsing for model responses.
  */
 
-/**
- * Extracts JSON content from raw LLM string, handling markdown blocks and preambles.
- *
- * @param {string} rawText - Raw text output from LLM.
- * @returns {Object} Parsed JSON object.
- * @throws {Error} If valid JSON cannot be found or parsed.
- */
-export function extractJsonFromText(rawText) {
-  if (typeof rawText !== 'string' || !rawText.trim()) {
-    throw new Error('Empty or invalid response received from AI model.');
+function removeTrailingCommas(jsonText) {
+  let result = '';
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < jsonText.length; index++) {
+    const character = jsonText[index];
+    if (inString) {
+      result += character;
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+      result += character;
+      continue;
+    }
+
+    if (character === ',') {
+      let nextIndex = index + 1;
+      while (/\s/.test(jsonText[nextIndex] || '')) nextIndex++;
+      if (jsonText[nextIndex] === '}' || jsonText[nextIndex] === ']') continue;
+    }
+    result += character;
   }
 
-  const trimmed = rawText.trim();
+  return result;
+}
 
-  // Try parsing directly if clean JSON
+function findBalancedObjects(text) {
+  const objects = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+    if (character === '{') {
+      if (depth === 0) start = index;
+      depth++;
+    } else if (character === '}' && depth > 0) {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        objects.push(text.slice(start, index + 1));
+        start = -1;
+      }
+    }
+  }
+
+  return objects;
+}
+
+function parseCandidate(candidate) {
+  const normalized = candidate.replace(/^\uFEFF/, '').trim();
   try {
-    return JSON.parse(trimmed);
-  } catch {
-    // Continue with pattern matching
-  }
-
-  // Check for markdown code fences (```json ... ``` or ``` ...)
-  const codeBlockMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (codeBlockMatch && codeBlockMatch[1]) {
-    try {
-      return JSON.parse(codeBlockMatch[1].trim());
-    } catch {
-      // Continue searching for brackets
+    return JSON.parse(normalized);
+  } catch (originalError) {
+    const withoutTrailingCommas = removeTrailingCommas(normalized);
+    if (withoutTrailingCommas !== normalized) {
+      return JSON.parse(withoutTrailingCommas);
     }
+    throw originalError;
   }
-
-  // Find outermost curly braces { ... }
-  const firstBrace = trimmed.indexOf('{');
-  const lastBrace = trimmed.lastIndexOf('}');
-  if (firstBrace !== -1 && lastBrace > firstBrace) {
-    const candidate = trimmed.substring(firstBrace, lastBrace + 1);
-    try {
-      return JSON.parse(candidate);
-    } catch (err) {
-      throw new Error(`Failed to parse extracted JSON object: ${err.message}`);
-    }
-  }
-
-  throw new Error('No valid JSON object found in AI response.');
 }
 
 /**
- * Parses and normalizes form answers from AI model response.
- *
- * @param {string|Object} rawResponse - Either the raw string content or parsed response object.
- * @returns {{ answers: Record<string, any> }}
+ * Returns every independently parseable JSON object in a model response.
+ * This safely handles prose, code fences, trailing commas, and concatenated
+ * objects such as `{...}{...}` without using eval or arbitrary code repair.
  */
-export function parseFormAnswers(rawResponse) {
-  let parsed;
-  if (typeof rawResponse === 'string') {
-    parsed = extractJsonFromText(rawResponse);
-  } else if (typeof rawResponse === 'object' && rawResponse !== null) {
-    parsed = rawResponse;
-  } else {
-    throw new Error('Invalid response type passed to parseFormAnswers.');
+export function extractJsonValuesFromText(rawText) {
+  if (typeof rawText !== 'string' || !rawText.trim()) {
+    throw new Error('The model returned an empty response.');
   }
 
-  // Support both {"answers": { "field": "val" }} and direct { "field": "val" }
-  let answers = null;
-  if (parsed.answers && typeof parsed.answers === 'object' && !Array.isArray(parsed.answers)) {
-    answers = parsed.answers;
-  } else if (typeof parsed === 'object' && !Array.isArray(parsed)) {
-    answers = parsed;
+  const trimmed = rawText.replace(/^\uFEFF/, '').trim();
+  try {
+    return [parseCandidate(trimmed)];
+  } catch {
+    // Continue with bounded object extraction.
+  }
+
+  const sources = [];
+  for (const match of trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi)) {
+    sources.push(match[1]);
+  }
+  sources.push(trimmed);
+
+  const parsedValues = [];
+  const seenCandidates = new Set();
+  let lastError = null;
+
+  for (const source of sources) {
+    for (const candidate of findBalancedObjects(source)) {
+      if (seenCandidates.has(candidate)) continue;
+      seenCandidates.add(candidate);
+      try {
+        parsedValues.push(parseCandidate(candidate));
+      } catch (error) {
+        lastError = error;
+      }
+    }
+  }
+
+  if (parsedValues.length === 0) {
+    const detail = lastError?.message ? ` ${lastError.message}` : '';
+    throw new Error(`The model response did not contain valid JSON.${detail}`);
+  }
+  return parsedValues;
+}
+
+export function extractJsonFromText(rawText) {
+  return extractJsonValuesFromText(rawText)[0];
+}
+
+function getCandidates(rawResponse) {
+  if (typeof rawResponse === 'string') return extractJsonValuesFromText(rawResponse);
+  if (rawResponse && typeof rawResponse === 'object' && !Array.isArray(rawResponse)) return [rawResponse];
+  throw new Error('The model returned an unsupported response type.');
+}
+
+export function parseFormAnswers(rawResponse) {
+  const candidates = getCandidates(rawResponse);
+  const wrapped = candidates.find(candidate => candidate && Object.hasOwn(candidate, 'answers'));
+  const parsed = wrapped || candidates.find(candidate => candidate && typeof candidate === 'object' && !Array.isArray(candidate));
+  const answers = wrapped ? parsed.answers : parsed;
+
+  if (Array.isArray(answers)) {
+    const normalized = {};
+    for (const entry of answers) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
+          typeof entry.key !== 'string' || !entry.key.trim() ||
+          !Object.hasOwn(entry, 'value') || !Object.hasOwn(entry, 'confidence')) {
+        throw new Error('The generation response contains an invalid answer entry.');
+      }
+      const key = entry.key.trim();
+      if (Object.hasOwn(normalized, key)) {
+        throw new Error(`The generation response contains a duplicate answer key: ${key}.`);
+      }
+      normalized[key] = { value: entry.value, confidence: entry.confidence };
+    }
+    return { answers: normalized };
   }
 
   if (!answers || typeof answers !== 'object') {
-    throw new Error('Parsed response does not contain a valid answers dictionary.');
+    throw new Error('The generation response does not contain an answers object.');
   }
-
   return { answers };
 }
 
+export function parseImprovementIntent(rawResponse) {
+  const candidates = getCandidates(rawResponse);
+  const parsed = candidates.find(candidate => Array.isArray(candidate?.targetKeys));
+  if (!parsed) {
+    throw new Error('The intent response does not contain a targetKeys array.');
+  }
+
+  const targetKeys = [...new Set(parsed.targetKeys
+    .filter(key => typeof key === 'string' && key.trim())
+    .map(key => key.trim()))];
+
+  return {
+    targetKeys,
+    request: typeof parsed.request === 'string' ? parsed.request.trim() : '',
+    confidence: typeof parsed.confidence === 'number' ? parsed.confidence : NaN
+  };
+}

@@ -1,286 +1,412 @@
-/**
- * Unit Tests for DOM Parser & Data Injection
- * Tests extraction of form fields, label mapping, and DOM answer injection with synthetic events.
- * Executes content_script.js in Node.js via mock DOM harness without requiring module exports.
- */
-
 import fs from 'fs';
 import vm from 'vm';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
+const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 let passed = 0;
 let failed = 0;
 
 function assert(condition, testName) {
   if (condition) {
-    console.log(`  ✓ PASS: ${testName}`);
+    console.log(`  PASS: ${testName}`);
     passed++;
   } else {
-    console.error(`  ✗ FAIL: ${testName}`);
+    console.error(`  FAIL: ${testName}`);
     failed++;
   }
 }
 
-// Minimal DOM simulation for Node.js test execution
 class MockEvent {
   constructor(type, options = {}) {
     this.type = type;
     this.bubbles = options.bubbles ?? false;
-    this.cancelable = options.cancelable ?? false;
   }
 }
 
+function matchesSelector(element, selector) {
+  const part = selector.trim();
+  if (part === '*') return true;
+  const labelFor = part.match(/^label\[for=["']?(.*?)["']?\]$/i)?.[1];
+  if (labelFor !== undefined) return element.tagName === 'LABEL' && element.getAttribute('for') === labelFor;
+  const attribute = part.match(/^\[([^=\]]+)(?:=["']?([^"'\]]+)["']?)?\]$/);
+  if (attribute) {
+    const actual = element.getAttribute(attribute[1]);
+    return attribute[2] === undefined ? actual !== null : actual === attribute[2];
+  }
+  return element.tagName.toLowerCase() === part.toLowerCase();
+}
+
 class MockElement {
-  constructor(tagName, attrs = {}) {
+  constructor(tagName, attributes = {}) {
     this.tagName = tagName.toUpperCase();
-    this.attrs = { ...attrs };
+    this.attributes = { ...attributes };
     this.children = [];
     this.parentElement = null;
-    this.eventListeners = {};
+    this.listeners = {};
     this.style = {};
-    this.value = attrs.value || '';
-    this.checked = false;
+    this.value = attributes.value || '';
+    this.checked = Boolean(attributes.checked);
     this.options = [];
     this.selectedIndex = 0;
+    this.disabled = false;
+    this.readOnly = false;
   }
 
-  get id() {
-    return this.attrs.id || '';
-  }
-  set id(val) {
-    this.attrs.id = val;
-  }
-
-  getAttribute(name) {
-    return this.attrs[name] !== undefined ? this.attrs[name] : null;
-  }
-
-  setAttribute(name, val) {
-    this.attrs[name] = String(val);
-  }
-
-  addEventListener(type, cb) {
-    if (!this.eventListeners[type]) this.eventListeners[type] = [];
-    this.eventListeners[type].push(cb);
-  }
-
-  dispatchEvent(event) {
-    const list = this.eventListeners[event.type] || [];
-    list.forEach(cb => cb(event));
-    return true;
-  }
-
-  closest(selector) {
-    if (selector.toLowerCase() === 'label' && this.parentElement && this.parentElement.tagName === 'LABEL') {
-      return this.parentElement;
-    }
-    return null;
-  }
-
-  cloneNode(deep = true) {
-    const clone = new MockElement(this.tagName, { ...this.attrs });
-    clone.textContent = this.textContent;
-    return clone;
-  }
-
+  get id() { return this.attributes.id || ''; }
+  getAttribute(name) { return this.attributes[name] ?? null; }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  addEventListener(type, listener) { (this.listeners[type] ||= []).push(listener); }
+  dispatchEvent(event) { (this.listeners[event.type] || []).forEach(listener => listener(event)); return true; }
   remove() {}
-
-  get textContent() {
-    if (this._textContent !== undefined) return this._textContent;
-    return this.children.map(c => c.textContent || '').join(' ');
-  }
-
-  set textContent(val) {
-    this._textContent = val;
-  }
-
-  get previousElementSibling() {
-    if (!this.parentElement) return null;
-    const idx = this.parentElement.children.indexOf(this);
-    return idx > 0 ? this.parentElement.children[idx - 1] : null;
-  }
-
-  querySelector(selector) {
-    return this.querySelectorAll(selector)[0] || null;
-  }
-
-  querySelectorAll(selector) {
-    const matches = [];
-    const lowerSel = selector.toLowerCase();
-
-    function recurse(node) {
-      for (const child of node.children) {
-        const tag = child.tagName.toLowerCase();
-        if (lowerSel.startsWith('label[for=')) {
-          const matchFor = selector.match(/label\[for=["']?(.*?)["']?\]/i);
-          if (matchFor && tag === 'label' && child.getAttribute('for') === matchFor[1]) {
-            matches.push(child);
-          }
-        } else {
-          const allowedTags = lowerSel.split(',').map(s => s.trim());
-          if (allowedTags.includes(tag)) {
-            matches.push(child);
-          }
-        }
-        recurse(child);
-      }
-    }
-
-    recurse(this);
-    return matches;
-  }
 
   appendChild(child) {
     child.parentElement = this;
     this.children.push(child);
     return child;
   }
-}
 
-// Setup environment globals before loading content_script.js
-globalThis.window = {
-  location: { href: 'https://example.com/form' },
-  HTMLInputElement: { prototype: {} },
-  HTMLTextAreaElement: { prototype: {} },
-  HTMLSelectElement: { prototype: {} }
-};
-globalThis.Event = MockEvent;
-globalThis.CSS = { escape: str => str };
+  closest(selector) {
+    const selectors = selector.split(',').map(part => part.trim());
+    let current = this;
+    while (current) {
+      if (selectors.some(part => matchesSelector(current, part))) return current;
+      current = current.parentElement;
+    }
+    return null;
+  }
 
-// Read and execute content_script.js into current global context
-const contentScriptPath = path.resolve(__dirname, '../extension_core/content_script.js');
-const contentScriptCode = fs.readFileSync(contentScriptPath, 'utf8');
-vm.runInThisContext(contentScriptCode);
+  cloneNode() {
+    const clone = new MockElement(this.tagName, this.attributes);
+    clone.textContent = this.textContent;
+    return clone;
+  }
 
-const {
-  extractFormFields,
-  findLabelForElement,
-  injectAnswers,
-  dispatchInputEvents
-} = globalThis.__AIAutoFiller;
+  click() {
+    this.clicked = true;
+    this.clickCount = (this.clickCount || 0) + 1;
+    const role = this.getAttribute('role');
+    const type = this.getAttribute('type');
+    if (role === 'radio') {
+      this.parentElement?.querySelectorAll('[role="radio"]').forEach(control => control.setAttribute('aria-checked', 'false'));
+      this.setAttribute('aria-checked', 'true');
+    } else if (role === 'checkbox') {
+      this.setAttribute('aria-checked', this.getAttribute('aria-checked') === 'true' ? 'false' : 'true');
+    } else if (type === 'radio') {
+      const root = this.getRoot();
+      root.querySelectorAll('input').filter(control =>
+        control.getAttribute('type') === 'radio' && control.getAttribute('name') === this.getAttribute('name')
+      ).forEach(control => { control.checked = false; });
+      this.checked = true;
+    } else if (type === 'checkbox') {
+      this.checked = !this.checked;
+    }
+    this.dispatchEvent(new MockEvent('click', { bubbles: true }));
+    this.dispatchEvent(new MockEvent('input', { bubbles: true }));
+    this.dispatchEvent(new MockEvent('change', { bubbles: true }));
+  }
 
-function buildDummyDomForm() {
-  const container = new MockElement('div');
+  getRoot() {
+    let current = this;
+    while (current.parentElement) current = current.parentElement;
+    return current;
+  }
 
-  // Field 1: Text input with explicit <label for="username">
-  const label1 = new MockElement('label', { for: 'username' });
-  label1.textContent = 'Username';
-  const input1 = new MockElement('input', { type: 'text', id: 'username', name: 'user_name', placeholder: 'Enter username' });
-  container.appendChild(label1);
-  container.appendChild(input1);
+  getRootNode() {
+    return this.getRoot();
+  }
 
-  // Field 2: Email input wrapped inside <label>
-  const label2 = new MockElement('label');
-  label2.textContent = 'Email Address';
-  const input2 = new MockElement('input', { type: 'email', id: 'user_email', name: 'email', placeholder: 'name@domain.com' });
-  label2.appendChild(input2);
-  container.appendChild(label2);
+  attachShadow() {
+    const root = new MockElement('shadow-root');
+    root.host = this;
+    this.shadowRoot = root;
+    return root;
+  }
 
-  // Field 3: Select dropdown with label
-  const label3 = new MockElement('label', { for: 'country' });
-  label3.textContent = 'Country';
-  const select3 = new MockElement('select', { id: 'country', name: 'user_country' });
-  const opt1 = new MockElement('option', { value: 'us' });
-  opt1.textContent = 'United States';
-  opt1.value = 'us';
-  const opt2 = new MockElement('option', { value: 'ca' });
-  opt2.textContent = 'Canada';
-  opt2.value = 'ca';
-  select3.options = [opt1, opt2];
-  select3.appendChild(opt1);
-  select3.appendChild(opt2);
-  container.appendChild(label3);
-  container.appendChild(select3);
+  get textContent() {
+    return this._textContent ?? this.children.map(child => child.textContent || '').join(' ');
+  }
 
-  // Setup document mock queries
-  globalThis.document = {
-    querySelector: (sel) => container.querySelector(sel),
-    querySelectorAll: (sel) => container.querySelectorAll(sel)
-  };
+  set textContent(value) { this._textContent = value; }
 
-  return { container, input1, input2, select3, label1, label2, label3 };
-}
+  get previousElementSibling() {
+    if (!this.parentElement) return null;
+    const index = this.parentElement.children.indexOf(this);
+    return index > 0 ? this.parentElement.children[index - 1] : null;
+  }
 
-function runDomTests() {
-  console.log('\n--- 1. Testing DOM Field Extraction & Label Mapping ---');
-  const { container, input1, input2, select3 } = buildDummyDomForm();
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
 
-  // Test label extraction
-  const label1Text = findLabelForElement(input1);
-  assert(label1Text === 'Username', `findLabelForElement extracts explicit <label for="username">: "${label1Text}"`);
-
-  const label2Text = findLabelForElement(input2);
-  assert(label2Text.includes('Email Address'), `findLabelForElement extracts parent label: "${label2Text}"`);
-
-  const label3Text = findLabelForElement(select3);
-  assert(label3Text === 'Country', `findLabelForElement extracts select label: "${label3Text}"`);
-
-  // Test extractFormFields
-  const fields = extractFormFields(container);
-  assert(fields.length === 3, `extractFormFields returns exactly 3 fields (got ${fields.length})`);
-
-  // Verify Field 1 mapping (id, type, label)
-  const f1 = fields.find(f => f.id === 'username');
-  assert(f1 && f1.type === 'text' && f1.label === 'Username', 'Field 1 correctly maps id="username", type="text", label="Username"');
-
-  // Verify Field 2 mapping (id, type, label)
-  const f2 = fields.find(f => f.id === 'user_email');
-  assert(f2 && f2.type === 'email' && f2.label.includes('Email Address'), 'Field 2 correctly maps id="user_email", type="email", label="Email Address"');
-
-  // Verify Field 3 mapping (id, type, label, options)
-  const f3 = fields.find(f => f.id === 'country');
-  assert(f3 && f3.type === 'select' && f3.options && f3.options.length === 2, 'Field 3 correctly maps id="country", type="select", options count=2');
-
-  console.log('\n--- 2. Testing Data Injection & Event Dispatching ---');
-
-  // Set up event listeners to verify change and input events fire
-  const firedEvents = {
-    username: { input: false, change: false },
-    user_email: { input: false, change: false },
-    country: { input: false, change: false }
-  };
-
-  input1.addEventListener('input', () => { firedEvents.username.input = true; });
-  input1.addEventListener('change', () => { firedEvents.username.change = true; });
-
-  input2.addEventListener('input', () => { firedEvents.user_email.input = true; });
-  input2.addEventListener('change', () => { firedEvents.user_email.change = true; });
-
-  select3.addEventListener('input', () => { firedEvents.country.input = true; });
-  select3.addEventListener('change', () => { firedEvents.country.change = true; });
-
-  // Mock AI response answers
-  const mockAiAnswers = {
-    username: 'alex_mercer',
-    user_email: 'alex@prototype.org',
-    country: 'Canada'
-  };
-
-  const injectedCount = injectAnswers(mockAiAnswers, container);
-  assert(injectedCount === 3, `injectAnswers returned 3 successfully filled fields (got ${injectedCount})`);
-
-  // Check updated values
-  assert(input1.value === 'alex_mercer', `input1 value updated to "alex_mercer" (got "${input1.value}")`);
-  assert(input2.value === 'alex@prototype.org', `input2 value updated to "alex@prototype.org" (got "${input2.value}")`);
-  assert(select3.selectedIndex === 1, `select3 selectedIndex updated to 1 ("Canada") (got ${select3.selectedIndex})`);
-
-  // Verify events fired
-  assert(firedEvents.username.input && firedEvents.username.change, 'input1 received both synthetic "input" and "change" events');
-  assert(firedEvents.user_email.input && firedEvents.user_email.change, 'input2 received both synthetic "input" and "change" events');
-  assert(firedEvents.country.input && firedEvents.country.change, 'select3 received both synthetic "input" and "change" events');
-
-  console.log(`\n================================`);
-  console.log(`DOM Test Results: ${passed} passed, ${failed} failed`);
-  console.log(`================================\n`);
-
-  if (failed > 0) {
-    process.exit(1);
+  querySelectorAll(selector) {
+    const selectors = selector.split(',').map(part => part.trim());
+    const matches = [];
+    const visit = node => {
+      for (const child of node.children) {
+        if (selectors.some(part => matchesSelector(child, part))) matches.push(child);
+        visit(child);
+      }
+    };
+    visit(this);
+    return matches;
   }
 }
 
-runDomTests();
+globalThis.window = {
+  HTMLInputElement: { prototype: {} },
+  HTMLTextAreaElement: { prototype: {} }
+};
+globalThis.Event = MockEvent;
+globalThis.CSS = { escape: value => value };
+globalThis.location = { pathname: '/quiz/sample-question', hostname: 'example.com' };
 
+const contentScriptPath = path.resolve(currentDirectory, '../extension_core/content_script.js');
+vm.runInThisContext(fs.readFileSync(contentScriptPath, 'utf8'));
+const { extractFormFields, injectAnswers, injectAnswersWithReport } = globalThis.__AIAutoFiller;
+
+function addLabeledField(container, labelText, element) {
+  const label = new MockElement('label', { for: element.id });
+  label.textContent = labelText;
+  container.appendChild(label);
+  container.appendChild(element);
+  return element;
+}
+
+function addNativeChoice(fieldset, type, id, name, value, text) {
+  const input = new MockElement('input', { type, id, name, value });
+  const label = new MockElement('label', { for: id });
+  label.textContent = text;
+  fieldset.appendChild(input);
+  fieldset.appendChild(label);
+  return input;
+}
+
+function buildForm() {
+  const container = new MockElement('div');
+  const siteHeader = new MockElement('header', { class: 'site-header' });
+  const menuButton = new MockElement('button', { type: 'button', 'aria-label': 'Open menu' });
+  siteHeader.appendChild(menuButton);
+  container.appendChild(siteHeader);
+  const email = addLabeledField(container, 'Email address', new MockElement('input', { id: 'email', type: 'email' }));
+  const summary = addLabeledField(container, 'Project summary', new MockElement('textarea', { id: 'summary' }));
+  const notes = addLabeledField(container, 'Additional notes', new MockElement('textarea', { id: 'notes', value: 'Keep this text' }));
+  const category = addLabeledField(container, 'Project category', new MockElement('select', { id: 'category' }));
+  const categoryA = new MockElement('option', { value: 'research' });
+  categoryA.value = 'research';
+  categoryA.textContent = 'Research';
+  const categoryB = new MockElement('option', { value: 'education' });
+  categoryB.value = 'education';
+  categoryB.textContent = 'Education';
+  category.options = [categoryA, categoryB];
+
+  const radioFieldset = new MockElement('fieldset');
+  const radioLegend = new MockElement('legend');
+  radioLegend.textContent = 'Choose a project type';
+  radioFieldset.appendChild(radioLegend);
+  const radioResearch = addNativeChoice(radioFieldset, 'radio', 'type_research', 'project_type', 'research', 'Research');
+  const radioEducation = addNativeChoice(radioFieldset, 'radio', 'type_education', 'project_type', 'education', 'Education');
+  container.appendChild(radioFieldset);
+
+  const checkboxFieldset = new MockElement('fieldset');
+  const checkboxLegend = new MockElement('legend');
+  checkboxLegend.textContent = 'Required features';
+  checkboxFieldset.appendChild(checkboxLegend);
+  const featureApi = addNativeChoice(checkboxFieldset, 'checkbox', 'feature_api', 'features', 'api', 'API');
+  const featureExport = addNativeChoice(checkboxFieldset, 'checkbox', 'feature_export', 'features', 'export', 'Export');
+  container.appendChild(checkboxFieldset);
+
+  const ariaTitle = new MockElement('div', { id: 'quiz_question' });
+  ariaTitle.textContent = 'Choose the correct answer';
+  container.appendChild(ariaTitle);
+  const ariaGroup = new MockElement('div', { role: 'radiogroup', 'aria-labelledby': 'quiz_question' });
+  const ariaA = new MockElement('div', { role: 'radio', 'aria-label': 'Answer A', 'data-value': 'a', 'aria-checked': 'false' });
+  const ariaB = new MockElement('div', { role: 'radio', 'aria-label': 'Answer B', 'data-value': 'b', 'aria-checked': 'false' });
+  ariaGroup.appendChild(ariaA);
+  ariaGroup.appendChild(ariaB);
+  container.appendChild(ariaGroup);
+
+  const ariaCheckboxTitle = new MockElement('div', { id: 'tools_question' });
+  ariaCheckboxTitle.textContent = 'Choose useful tools';
+  container.appendChild(ariaCheckboxTitle);
+  const ariaCheckboxGroup = new MockElement('div', { role: 'group', 'aria-labelledby': 'tools_question' });
+  const ariaToolA = new MockElement('div', { role: 'checkbox', 'aria-label': 'Linting', 'data-value': 'lint', 'aria-checked': 'false' });
+  const ariaToolB = new MockElement('div', { role: 'checkbox', 'aria-label': 'Testing', 'data-value': 'test', 'aria-checked': 'false' });
+  ariaCheckboxGroup.appendChild(ariaToolA);
+  ariaCheckboxGroup.appendChild(ariaToolB);
+  container.appendChild(ariaCheckboxGroup);
+
+  const quizGroup = new MockElement('section', { class: 'quiz-question' });
+  const quizHeading = new MockElement('h2');
+  quizHeading.textContent = 'Which city is the capital of France?';
+  quizGroup.appendChild(quizHeading);
+  const cityLondon = new MockElement('button', { type: 'button' });
+  cityLondon.textContent = 'London';
+  const cityParis = new MockElement('button', { type: 'button' });
+  cityParis.textContent = 'Paris';
+  const cityRome = new MockElement('button', { type: 'button' });
+  cityRome.textContent = 'Rome';
+  quizGroup.appendChild(cityLondon);
+  quizGroup.appendChild(cityParis);
+  quizGroup.appendChild(cityRome);
+  container.appendChild(quizGroup);
+
+  const shadowHost = new MockElement('div', { id: 'assessment-widget' });
+  const shadowRoot = shadowHost.attachShadow();
+  const shadowTitle = new MockElement('div', { id: 'shadow_question' });
+  shadowTitle.textContent = 'Which runtime executes JavaScript in Chrome?';
+  shadowRoot.appendChild(shadowTitle);
+  const shadowGroup = new MockElement('div', { role: 'radiogroup', 'aria-labelledby': 'shadow_question' });
+  const shadowV8 = new MockElement('div', { role: 'radio', 'aria-label': 'V8', 'data-value': 'v8', 'aria-checked': 'false' });
+  const shadowSpiderMonkey = new MockElement('div', { role: 'radio', 'aria-label': 'SpiderMonkey', 'data-value': 'spidermonkey', 'aria-checked': 'false' });
+  shadowGroup.appendChild(shadowV8);
+  shadowGroup.appendChild(shadowSpiderMonkey);
+  shadowRoot.appendChild(shadowGroup);
+  container.appendChild(shadowHost);
+  container.children.pop();
+  container.children.splice(container.children.indexOf(quizGroup), 0, shadowHost);
+
+  globalThis.document = {
+    querySelector: selector => container.querySelector(selector),
+    querySelectorAll: selector => container.querySelectorAll(selector),
+    getElementById: id => container.querySelectorAll(`[id="${id}"]`)[0] || null
+  };
+
+  return {
+    container, email, summary, notes, category,
+    radioResearch, radioEducation, featureApi, featureExport, ariaA, ariaB, ariaToolA, ariaToolB,
+    cityLondon, cityParis, cityRome, quizHeading, menuButton, shadowV8, shadowSpiderMonkey
+  };
+}
+
+function runTests() {
+  console.log('\n--- DOM extraction and grouped choices ---');
+  const form = buildForm();
+  const fields = extractFormFields(form.container);
+  assert(fields.length === 10, 'Text, select, native, ARIA, custom, and shadow-root choice groups are described');
+  assert(!Object.hasOwn(fields.find(field => field.id === 'email'), 'isPersonal'), 'Email fields are not classified or excluded');
+  assert(fields.find(field => field.id === 'notes').hasExistingValue, 'Existing value is marked as protected');
+  assert(!fields.some(field => Object.hasOwn(field, 'value')), 'Extracted context does not expose current values');
+
+  const nativeRadio = fields.find(field => field.type === 'radio' && field.name === 'project_type');
+  const nativeCheckbox = fields.find(field => field.type === 'checkbox' && field.name === 'features');
+  const ariaRadio = fields.find(field => field.type === 'radio' && field.label === 'Choose the correct answer');
+  const ariaCheckbox = fields.find(field => field.type === 'checkbox' && field.label === 'Choose useful tools');
+  const customRadio = fields.find(field => field.type === 'radio' && field.label === 'Which city is the capital of France?');
+  const shadowRadio = fields.find(field => field.type === 'radio' && field.label === 'Which runtime executes JavaScript in Chrome?');
+  assert(nativeRadio?.options.length === 2, 'Native radio buttons are grouped with options');
+  assert(nativeCheckbox?.options.length === 2, 'Native checkboxes are grouped with options');
+  assert(ariaRadio?.options.length === 2, 'ARIA radio controls are grouped like Google Forms');
+  assert(ariaCheckbox?.options.length === 2, 'ARIA checkbox controls are grouped like Google Forms');
+  assert(customRadio?.options.length === 3, 'Quiz buttons are grouped as a radio question');
+  assert(shadowRadio?.options.length === 2, 'Open shadow-root controls use accessible names and grouping');
+  assert(!fields.some(field => field.label.toLowerCase().includes('menu')), 'Navigation menu is never classified as a choice');
+
+  const shadowFilled = injectAnswers({ [shadowRadio.trackingId]: 'v8' }, form.container);
+  assert(shadowFilled === 1 && form.shadowV8.getAttribute('aria-checked') === 'true',
+    'Shadow-root radio answers can be injected through the composed DOM');
+
+  console.log('\n--- Safe answer injection ---');
+  const events = [];
+  form.summary.addEventListener('input', () => events.push('summary'));
+  form.category.addEventListener('change', () => events.push('category'));
+  const report = injectAnswersWithReport({
+    email: 'invented@example.com',
+    summary: 'A concise project summary.',
+    notes: 'Overwrite the existing answer',
+    category: 'education',
+    [nativeRadio.trackingId]: 'education',
+    [nativeCheckbox.trackingId]: ['api', 'export'],
+    [ariaRadio.trackingId]: 'b',
+    [ariaCheckbox.trackingId]: ['lint', 'test'],
+    [customRadio.trackingId]: 'Paris',
+    [shadowRadio.trackingId]: 'v8'
+  }, form.container);
+
+  assert(report.filledCount === 8, 'Every eligible text and grouped choice question is filled');
+  assert(form.email.value === 'invented@example.com', 'Personal-looking fields are filled like other fields');
+  assert(form.notes.value === 'Keep this text', 'Existing field value is preserved');
+  assert(form.summary.value === 'A concise project summary.', 'Eligible textarea is filled');
+  assert(form.category.selectedIndex === 1, 'Eligible select option is chosen');
+  assert(form.radioEducation.checked && !form.radioResearch.checked, 'Native radio answer is selected');
+  assert(form.featureApi.checked && form.featureExport.checked, 'Multiple native checkboxes are selected');
+  assert(form.ariaB.getAttribute('aria-checked') === 'true', 'ARIA radio answer is clicked');
+  assert(form.ariaToolA.getAttribute('aria-checked') === 'true' && form.ariaToolB.getAttribute('aria-checked') === 'true', 'Multiple ARIA checkboxes are clicked');
+  assert(form.cityParis.clicked && !form.cityLondon.clicked, 'Custom quiz answer button is clicked');
+  assert(!form.menuButton.clicked, 'Menu button is never clicked');
+  assert(report.detected.radio === 4 && report.detected.checkbox === 2, 'Status report includes all radio and checkbox groups');
+  assert(report.filled.radio === 3 && report.filled.checkbox === 2, 'Status report includes completed choice groups');
+  assert(events.includes('summary') && events.includes('category'), 'Synthetic events are dispatched');
+
+  const overwritten = injectAnswers({ [nativeRadio.trackingId]: 'research' }, form.container);
+  assert(overwritten === 0 && form.radioEducation.checked, 'Existing radio selection is never overwritten');
+
+  const lateField = addLabeledField(form.container, 'Late generated field', new MockElement('input', { id: 'late_field', type: 'text' }));
+  const repeatedReport = injectAnswersWithReport({
+    [customRadio.trackingId]: 'Rome',
+    late_field: 'Must remain empty'
+  }, form.container);
+  assert(repeatedReport.filledCount === 0 && repeatedReport.blockedUntilContentChanges &&
+    !form.cityRome.clicked && lateField.value === '',
+  'All interaction is locked while custom quiz content is unchanged');
+
+  form.quizHeading.textContent = 'Which city is the capital of Spain?';
+  form.cityLondon.textContent = 'Berlin';
+  form.cityParis.textContent = 'Madrid';
+  form.cityRome.textContent = 'Lisbon';
+  const changedQuestion = extractFormFields(form.container).find(field =>
+    field.type === 'radio' && field.label === 'Which city is the capital of Spain?'
+  );
+  const nextQuestionClick = injectAnswers({ [changedQuestion.trackingId]: 'Madrid' }, form.container);
+  assert(nextQuestionClick === 1 && form.cityParis.clickCount === 2, 'Quiz interaction unlocks after question content changes');
+
+  const ambiguous = new MockElement('fieldset');
+  const ambiguousLegend = new MockElement('legend');
+  ambiguousLegend.textContent = 'Question 1';
+  ambiguous.appendChild(ambiguousLegend);
+  const ambiguousA = addNativeChoice(ambiguous, 'radio', 'ambiguous_a', 'question_1', 'a', 'Option');
+  const ambiguousB = addNativeChoice(ambiguous, 'radio', 'ambiguous_b', 'question_1', 'b', 'Option');
+  form.container.appendChild(ambiguous);
+  const ambiguousField = extractFormFields(form.container).find(field => field.name === 'question_1');
+  assert(ambiguousField?.qualityValid === false && ambiguousField.qualityIssues.includes('duplicate-options'),
+    'Missing or duplicated choice context is marked invalid');
+  const ambiguousReport = injectAnswersWithReport({ [ambiguousField.trackingId]: 'a' }, form.container);
+  assert(!ambiguousA.clicked && !ambiguousB.clicked && ambiguousReport.invalid.radio >= 1,
+    'Invalid choice groups are reported and never clicked');
+
+  const semanticSection = new MockElement('section');
+  const semanticQuestion = new MockElement('p');
+  semanticQuestion.textContent = 'Which statements are correct?';
+  semanticSection.appendChild(semanticQuestion);
+  const semanticOptionA = new MockElement('div', { role: 'checkbox', 'aria-label': 'First statement', 'aria-checked': 'false' });
+  const semanticOptionB = new MockElement('div', { role: 'checkbox', 'aria-label': 'Second statement', 'aria-checked': 'false' });
+  semanticSection.appendChild(semanticOptionA);
+  semanticSection.appendChild(semanticOptionB);
+  const inferredGroup = extractFormFields(semanticSection)[0];
+  assert(inferredGroup?.label === 'Which statements are correct?' && inferredGroup.options.length === 2,
+    'Accessible question context infers a group when controls omit an explicit group role');
+
+  const nptelCard = new MockElement('div', { class: 'p-3 sm:p-5 w-full' });
+  const nptelQuestion = new MockElement('div', { class: 'flex items-start justify-between' });
+  nptelQuestion.textContent = '1. Based on Lecture 37, which statements are correct? 1 Point';
+  const nptelOptions = new MockElement('div', { class: 'space-y-3 mt-4' });
+  nptelCard.appendChild(nptelQuestion);
+  nptelCard.appendChild(nptelOptions);
+  const nptelChoices = ['Gestures regulate interaction', 'Words are always required', 'Silence communicates'];
+  nptelChoices.forEach(text => {
+    const label = new MockElement('label');
+    const input = new MockElement('input', { type: 'checkbox', name: 'rFpvLxQt025v_6672786799460352' });
+    const caption = new MockElement('span');
+    caption.textContent = text;
+    label.appendChild(input);
+    label.appendChild(caption);
+    nptelOptions.appendChild(label);
+  });
+  const nptelField = extractFormFields(nptelCard)[0];
+  assert(nptelField?.label === '1. Based on Lecture 37, which statements are correct?' &&
+    nptelField.options.length === 3 && nptelField.qualityValid,
+  'NPTEL-style randomized groups use the preceding rendered question instead of the machine name');
+
+  console.log(`\nDOM tests: ${passed} passed, ${failed} failed\n`);
+  if (failed) process.exit(1);
+}
+
+runTests();

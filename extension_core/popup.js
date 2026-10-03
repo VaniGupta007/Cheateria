@@ -1,181 +1,193 @@
-/**
- * Popup UI Controller
- * Manages configuration storage and initiates autofill commands.
- */
+import { MESSAGE_TYPES } from '../shared_config/settings.js';
+import { selectBestFrame } from './frame_selector.js';
 
-import { DEFAULT_SETTINGS, STORAGE_KEYS, MESSAGE_TYPES } from '../shared_config/settings.js';
+const statusIndicator = document.getElementById('statusIndicator');
+const statusText = document.getElementById('statusText');
+const statusDetail = document.getElementById('statusDetail');
+const fieldStatus = document.getElementById('fieldStatus');
+const instructionForm = document.getElementById('instructionForm');
+const instructionInput = document.getElementById('instructionInput');
+const submitButton = document.getElementById('submitButton');
 
-// DOM elements
-const apiKeyInput = document.getElementById('apiKey');
-const toggleApiKeyBtn = document.getElementById('toggleApiKeyBtn');
-const modelSelect = document.getElementById('modelSelect');
-const customModelGroup = document.getElementById('customModelGroup');
-const customModelInput = document.getElementById('customModel');
-const userContextInput = document.getElementById('userContext');
-const enabledToggle = document.getElementById('enabledToggle');
-const saveSettingsBtn = document.getElementById('saveSettingsBtn');
-const fillCurrentPageBtn = document.getElementById('fillCurrentPageBtn');
-const statusMessage = document.getElementById('statusMessage');
+let requestInFlight = false;
 
-let statusTimeout = null;
-
-function showStatus(text, type = 'info', duration = 3500) {
-  if (statusTimeout) clearTimeout(statusTimeout);
-  statusMessage.textContent = text;
-  statusMessage.className = type;
-  if (duration > 0) {
-    statusTimeout = setTimeout(() => {
-      statusMessage.className = '';
-      statusMessage.textContent = '';
-    }, duration);
+function renderFieldStatus(report) {
+  fieldStatus.replaceChildren();
+  if (!report?.detected) {
+    fieldStatus.hidden = true;
+    return;
   }
+
+  const categories = [
+    ['text', 'Text'],
+    ['radio', 'Radio'],
+    ['checkbox', 'Checkbox'],
+    ['select', 'Select']
+  ];
+
+  categories.forEach(([key, label]) => {
+    const detected = Number(report.detected[key] || 0);
+    if (detected === 0) return;
+    const filled = Number(report.filled?.[key] || 0);
+    const preserved = Number(report.preserved?.[key] || 0);
+    const invalid = Number(report.invalid?.[key] || 0);
+    const item = document.createElement('div');
+    item.className = 'field-status-item';
+    item.title = `${detected} detected, ${filled} completed, ${preserved} preserved, ${invalid} skipped as ambiguous`;
+
+    const name = document.createElement('span');
+    name.textContent = label;
+    const count = document.createElement('strong');
+    count.textContent = `${filled}/${detected}`;
+    item.append(name, count);
+    fieldStatus.appendChild(item);
+  });
+  fieldStatus.hidden = fieldStatus.childElementCount === 0;
 }
 
-// Load saved configuration from chrome.storage.local
-async function loadSettings() {
-  try {
-    const data = await chrome.storage.local.get([
-      STORAGE_KEYS.API_KEY,
-      STORAGE_KEYS.MODEL,
-      STORAGE_KEYS.ENABLED,
-      STORAGE_KEYS.USER_CONTEXT
-    ]);
-
-    if (data[STORAGE_KEYS.API_KEY]) {
-      apiKeyInput.value = data[STORAGE_KEYS.API_KEY];
-    }
-
-    const savedModel = data[STORAGE_KEYS.MODEL] || DEFAULT_SETTINGS.model;
-    const knownOptions = Array.from(modelSelect.options).map(o => o.value);
-
-    if (knownOptions.includes(savedModel)) {
-      modelSelect.value = savedModel;
-      customModelGroup.style.display = 'none';
-    } else {
-      modelSelect.value = 'custom';
-      customModelInput.value = savedModel;
-      customModelGroup.style.display = 'block';
-    }
-
-    if (data[STORAGE_KEYS.ENABLED] !== undefined) {
-      enabledToggle.checked = Boolean(data[STORAGE_KEYS.ENABLED]);
-    } else {
-      enabledToggle.checked = DEFAULT_SETTINGS.enabled;
-    }
-
-    if (data[STORAGE_KEYS.USER_CONTEXT]) {
-      userContextInput.value = data[STORAGE_KEYS.USER_CONTEXT];
-    }
-  } catch (err) {
-    console.error('Failed to load settings:', err);
-    showStatus('Failed to load settings', 'error');
-  }
+function setStatus(state, text, detail = '', report = null) {
+  statusIndicator.className = `status-indicator ${state}`;
+  statusText.className = `status-text ${state}`;
+  statusText.textContent = text;
+  statusDetail.textContent = detail;
+  renderFieldStatus(report);
 }
 
-// Save settings to chrome.storage.local
-async function saveSettings(silent = false) {
-  const apiKey = apiKeyInput.value.trim();
-  const selectedModelVal = modelSelect.value;
-  const model = selectedModelVal === 'custom'
-    ? (customModelInput.value.trim() || DEFAULT_SETTINGS.model)
-    : selectedModelVal;
-  const isEnabled = enabledToggle.checked;
-  const userContext = userContextInput.value.trim();
+function isRestrictedUrl(url = '') {
+  return /^(chrome|edge|about|devtools|view-source):/i.test(url) ||
+    /^https:\/\/chromewebstore\.google\.com\//i.test(url);
+}
 
-  try {
-    await chrome.storage.local.set({
-      [STORAGE_KEYS.API_KEY]: apiKey,
-      [STORAGE_KEYS.MODEL]: model,
-      [STORAGE_KEYS.ENABLED]: isEnabled,
-      [STORAGE_KEYS.USER_CONTEXT]: userContext
+async function scanFrames(tabId) {
+  const scan = async () => chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: () => {
+      const api = globalThis.__AIAutoFiller;
+      if (!api?.extractFormFields) return null;
+      const fields = api.extractFormFields();
+      const fingerprint = JSON.stringify(fields.map(field => ({
+        type: field.type,
+        label: field.label,
+        options: field.options?.map(option => [option.value, option.text]) || [],
+        hasExistingValue: field.hasExistingValue,
+        qualityValid: field.qualityValid
+      })));
+      return {
+        fields,
+        fingerprint,
+        url: globalThis.location?.href || '',
+        title: globalThis.document?.title || ''
+      };
+    }
+  });
+
+  let results = await scan();
+  if (!results.some(item => item.result)) {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: ['extension_core/content_script.js']
     });
-
-    if (!silent) {
-      showStatus('Settings saved successfully!', 'success');
-    }
-    return true;
-  } catch (err) {
-    console.error('Failed to save settings:', err);
-    showStatus(`Save failed: ${err.message}`, 'error');
-    return false;
+    results = await scan();
   }
+
+  return results
+    .filter(item => item.result)
+    .map(item => ({ frameId: item.frameId, ...item.result }));
 }
 
-// Auto-fill active tab
-async function triggerAutofill() {
-  const apiKey = apiKeyInput.value.trim();
-  if (!apiKey) {
-    showStatus('Please enter your OpenRouter API key first.', 'error');
-    apiKeyInput.focus();
-    return;
-  }
+async function injectIntoFrame(tabId, frameId, expectedFingerprint, answers) {
+  const [execution] = await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [frameId] },
+    func: (fingerprint, generatedAnswers) => {
+      const api = globalThis.__AIAutoFiller;
+      if (!api?.extractFormFields || !api?.injectAnswersWithReport) {
+        return { success: false, error: 'The form helper is no longer available in this frame.' };
+      }
+      const currentFields = api.extractFormFields();
+      const currentFingerprint = JSON.stringify(currentFields.map(field => ({
+        type: field.type,
+        label: field.label,
+        options: field.options?.map(option => [option.value, option.text]) || [],
+        hasExistingValue: field.hasExistingValue,
+        qualityValid: field.qualityValid
+      })));
+      if (currentFingerprint !== fingerprint) {
+        return { success: false, error: 'The form changed while answers were being generated. Run the extension again.' };
+      }
+      return { success: true, report: api.injectAnswersWithReport(generatedAnswers) };
+    },
+    args: [expectedFingerprint, answers]
+  });
+  return execution?.result || { success: false, error: 'The form frame did not return an injection result.' };
+}
 
-  // Save current settings first
-  await saveSettings(true);
-
-  if (!enabledToggle.checked) {
-    showStatus('Auto-filler is disabled. Turn the toggle ON.', 'error');
-    return;
-  }
-
-  fillCurrentPageBtn.disabled = true;
-  showStatus('Scanning page and querying AI...', 'info', 0);
+async function fillCurrentForm(instruction = '') {
+  if (requestInFlight) return;
+  requestInFlight = true;
+  submitButton.disabled = true;
+  instructionInput.disabled = true;
+  setStatus('loading', 'Working', instruction ? 'Understanding your request' : 'Reading the current form');
 
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab || !tab.id) {
-      throw new Error('No active browser tab detected.');
+    if (!tab?.id) throw new Error('No active tab is available.');
+    if (isRestrictedUrl(tab.url)) throw new Error('Chrome does not allow extensions to edit this page.');
+
+    const selectedFrame = selectBestFrame(await scanFrames(tab.id));
+    if (!selectedFrame) {
+      throw new Error('No trustworthy form fields were found in this page or its frames.');
     }
 
-    // Ping content script to initiate scan and fill
-    const response = await chrome.tabs.sendMessage(tab.id, {
-      action: MESSAGE_TYPES.FILL_FORM
+    const response = await chrome.runtime.sendMessage({
+      action: MESSAGE_TYPES.PROCESS_FORM,
+      fields: selectedFrame.fields,
+      instruction
     });
+    if (!response?.success) throw new Error(response?.error || 'The form could not be filled.');
 
-    if (!response) {
-      throw new Error('Could not communicate with the page. Try refreshing the page.');
-    }
+    const injection = await injectIntoFrame(
+      tab.id,
+      selectedFrame.frameId,
+      selectedFrame.fingerprint,
+      response.answers
+    );
+    if (!injection.success) throw new Error(injection.error || 'The generated answers could not be applied.');
 
-    if (response.success) {
-      showStatus(`Done! Injected ${response.filledCount || 0} fields.`, 'success');
-    } else {
-      showStatus(`Error: ${response.error || 'Failed to fill form.'}`, 'error');
-    }
-  } catch (err) {
-    console.error('Autofill trigger failed:', err);
-    showStatus(err.message || 'Failed to communicate with active tab.', 'error');
+    const report = injection.report;
+    const count = Number(report?.filledCount || 0);
+    const choiceDetected = Number(report?.detected?.radio || 0) +
+      Number(report?.detected?.checkbox || 0);
+    const detail = report?.blockedUntilContentChanges
+      ? 'Waiting for the quiz content to change'
+      : count === 1
+      ? '1 empty field completed'
+      : count > 1
+        ? `${count} empty fields completed`
+        : choiceDetected > 0
+          ? `${choiceDetected} choice question${choiceDetected === 1 ? '' : 's'} detected; no answer was applied`
+          : 'No eligible empty fields needed changes';
+    setStatus('success', 'Successful', detail, report);
+    if (instruction) instructionInput.value = '';
+  } catch (error) {
+    console.error('Form fill failed:', error);
+    setStatus('error', 'Could not complete', error.message || 'Please refresh the page and try again.');
   } finally {
-    fillCurrentPageBtn.disabled = false;
+    requestInFlight = false;
+    submitButton.disabled = false;
+    instructionInput.disabled = false;
   }
 }
 
-// Event Listeners
+instructionForm.addEventListener('submit', event => {
+  event.preventDefault();
+  const instruction = instructionInput.value.trim();
+  if (!instruction) {
+    instructionInput.focus();
+    return;
+  }
+  fillCurrentForm(instruction);
+});
+
 document.addEventListener('DOMContentLoaded', () => {
-  loadSettings();
-
-  toggleApiKeyBtn.addEventListener('click', () => {
-    if (apiKeyInput.type === 'password') {
-      apiKeyInput.type = 'text';
-      toggleApiKeyBtn.textContent = 'Hide';
-    } else {
-      apiKeyInput.type = 'password';
-      toggleApiKeyBtn.textContent = 'Show';
-    }
-  });
-
-  modelSelect.addEventListener('change', () => {
-    customModelGroup.style.display = modelSelect.value === 'custom' ? 'block' : 'none';
-  });
-
-  enabledToggle.addEventListener('change', () => {
-    saveSettings(true);
-  });
-
-  saveSettingsBtn.addEventListener('click', () => {
-    saveSettings(false);
-  });
-
-  fillCurrentPageBtn.addEventListener('click', () => {
-    triggerAutofill();
-  });
+  fillCurrentForm();
 });

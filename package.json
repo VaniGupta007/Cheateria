@@ -1,12 +1,15 @@
 {
   "name": "ai-auto-filler-extension",
-  "version": "1.0.0",
+  "version": "1.3.2",
   "description": "Background-running Chrome extension that detects web forms, extracts questions, queries OpenRouter AI, and injects answers.",
   "type": "module",
   "scripts": {
+    "build": "node scripts/build_extension.js",
     "test:ai": "node tests/test_ai_module.js",
     "test:dom": "node tests/test_dom_parser.js",
-    "test": "node tests/test_ai_module.js && node tests/test_dom_parser.js"
+    "test:frames": "node tests/test_frame_selector.js",
+    "test": "node tests/test_ai_module.js && node tests/test_dom_parser.js && node tests/test_frame_selector.js",
+    "verify": "npm run test && npm run build"
   },
   "keywords": [
     "chrome-extension",
